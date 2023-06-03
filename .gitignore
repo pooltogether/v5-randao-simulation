@@ -1,0 +1,7 @@
+.DS_Store
+
+.envrc
+credentials.json
+token.json
+
+node_modules
