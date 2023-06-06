@@ -222,13 +222,19 @@
   }
 
   // Simulate the expected number of Nk for various values of r and k using the Monte Carlo method
-  function simulateExpectedNK(numSimulation, rValues, numEpochs, targetEpoch = null, targetSlot = null) {
+  function simulateExpectedNK(numSimulation, rValues, numEpochs, targetEpoch = null, targetSlot = false) {
     const results = [];
     const n = 32;
+
+    // n + 1 cause we also store 0 nK-blocktuples
     const nKBlocktuples = Array.from({ length: n + 1 }, () => 0);
+
     const nkValues = Array.from({ length: numSimulation }, () =>
       Array.from({ length: numEpochs }, () => Array.from({ length: n }, () => 0)),
     );
+
+    let targetSlotConsecutiveCount = 0;
+    let targetEpochSlots = Array.from({ length: n }, () => 0);
 
     // Iterate over different r values
     for (const r of rValues) {
@@ -236,6 +242,12 @@
       for (let i = 0; i < numSimulation; i++) {
         // Simulate epoch for j numEpochs
         for (let j = 0; j < numEpochs; j++) {
+
+          // We randomize the target slot since the random number may be requested at any time in the epoch
+          if (targetSlot || targetSlot === 0) {
+            targetSlot = Math.floor(Math.random() * n);
+          }
+
           // We toss a coin for each slot
           for (let k = 0; k < n; k++) {
             // Generate a random number between 0 and 1 for each coin toss
@@ -247,16 +259,16 @@
             }
 
             // We exit the loop if we have reached the target slot of the target epoch
-            if (targetSlot !== null && j === numEpochs - 1 && k === targetSlot - 1) {
+            if (targetSlot && j === numEpochs - 1 && k === targetSlot - 1) {
               break;
             }
           }
 
-          countConsecutiveKBlocktuples(nKBlocktuples, nkValues[i][j], j, targetEpoch, targetSlot);
+          countConsecutiveKBlocktuples(nkValues[i][j], j);
         }
       }
 
-      function countConsecutiveKBlocktuples(nK, epoch, epochNumber, targetEpoch = null, targetSlot = null) {
+      function countConsecutiveKBlocktuples(epoch, epochNumber) {
         let consecutiveCount = 0;
 
         for (let index = 0; index < epoch.length; index++) {
@@ -264,42 +276,51 @@
 
           // We exit the loop if this is not the target epoch
           if (targetEpoch !== null && epochNumber !== targetEpoch - 1) {
-            return;
+            break;
           }
 
           if (slot === 1) {
             consecutiveCount++;
-          } else if (consecutiveCount !== 0) {
-            // We don't track 0 k blocktuples
-            nK[consecutiveCount] += 1;
+          } else if (consecutiveCount !== 0) { // We don't track 0 k blocktuples
+            nKBlocktuples[consecutiveCount] += 1;
 
             // Reset the count
             consecutiveCount = 0;
           }
 
-          // We exit the loop when we reach the target slot for the target epoch
-          if (targetEpoch !== null && epochNumber === targetEpoch - 1 && targetSlot !== null && index === targetSlot - 1) {
-            return;
+          // We have reached the target epoch
+          if (targetEpoch !== null && epochNumber === targetEpoch - 1) {
+
+            if (slot === 1) {
+              targetEpochSlots[index] += 1;
+
+              if (targetSlot && index === targetSlot - 1) {
+                targetSlotConsecutiveCount++;
+
+                // We exit the loop when we reach the target slot for the target epoch
+                break;
+              }
+            }
           }
         }
       }
 
       const averageNKBlocktuples = nKBlocktuples.map((sum) => Math.floor(sum / numSimulation));
+      const oddsNKBlocktuples = averageNKBlocktuples.map((sum) => sum / (numEpochs * n));
+
+      const averageSlotBlocktuples = targetEpochSlots.map((sum) => Math.floor(sum / numSimulation));
+      const averageTargetSlotBlocktuple = Math.floor(targetSlotConsecutiveCount / numSimulation);
 
       // Store the results for the current r value
-      results.push({ r, averageNKBlocktuples });
+      if (targetSlot) {
+        results.push({ r, averageNKBlocktuples, oddsNKBlocktuples, averageTargetSlotBlocktuple });
+      } else {
+        results.push({ r, averageNKBlocktuples, oddsNKBlocktuples });
+      }
     }
 
     return results;
   }
-
-  const validatorPools = transposeArray(await getValidatorPools());
-  const lidoRStake = [validatorPools[validatorPools.length - 1]][0][1];
-
-  console.log("simulateExpectedNK", simulateExpectedNK(100000, [lidoRStake], 112, 112, 15));
-
-  // const expectedDailyNKBlocktuples = simulateExpectedNK(50000, [lidoRStake], 225);
-  // console.log('expectedDailyNKBlocktuples', expectedDailyNKBlocktuples);
 
   // Calculate the probabilities of achieving consecutive blocktuples in each epoch
   function calculateEpochProbabilities(targetEpoch, targetSlot, p) {
@@ -348,6 +369,18 @@
       expectedDailyNKBlocktuples[0].averageNKBlocktuples,
     ]);
 
+    const lidoExpectedDailyOddsNKBlocktuples = transposeArray([
+      expectedDailyNKBlocktuples[0].oddsNKBlocktuples,
+    ]);
+
+    const expectedTargetEpochNKBlocktuples = simulateExpectedNK(50000, [lidoRStake], 225, 225, true);
+    const lidoExpectedTargetEpochNKBlocktuples = transposeArray([
+      expectedTargetEpochNKBlocktuples[0].averageNKBlocktuples,
+    ]);
+
+    const lidoExpectedAvgTargetSlotBlocktuple =
+      transposeArray([[expectedTargetEpochNKBlocktuples[0].averageTargetSlotBlocktuple]]);
+
     sheet.update({
       spreadsheetId,
       range: "A36",
@@ -374,7 +407,34 @@
         values: lidoExpectedDailyNKBlocktuples,
       },
     });
+
+    sheet.update({
+      spreadsheetId,
+      range: "E53",
+      valueInputOption: "USER_ENTERED",
+      resource: {
+        values: lidoExpectedDailyOddsNKBlocktuples,
+      },
+    });
+
+    sheet.update({
+      spreadsheetId,
+      range: "F53",
+      valueInputOption: "USER_ENTERED",
+      resource: {
+        values: lidoExpectedTargetEpochNKBlocktuples,
+      },
+    });
+
+    sheet.update({
+      spreadsheetId,
+      range: "G53",
+      valueInputOption: "USER_ENTERED",
+      resource: {
+        values: lidoExpectedAvgTargetSlotBlocktuple,
+      },
+    });
   }
 
-  // await authorize().then(setValues).catch(console.error);
+  await authorize().then(setValues).catch(console.error);
 })();
