@@ -221,13 +221,51 @@
     return results;
   }
 
+  function getMedian(array) {
+    const sortedArray = array.sort((a, b) => a - b);
+    const length = sortedArray.length;
+
+    let median;
+
+    if (length % 2 === 1) {
+      median = sortedArray[Math.floor(length / 2)];
+    } else {
+      const middleIndex = length / 2;
+      median = (sortedArray[middleIndex - 1] + sortedArray[middleIndex]) / 2;
+    }
+
+    return median;
+  }
+
+  function getDoubleArrayMedian(doubleArray) {
+    const nestedArrayToSort = Array.from({ length: doubleArray.length }, () => []);
+
+    doubleArray.forEach((nestedArray, index) => {
+      nestedArray.forEach((value) => {
+        nestedArrayToSort[index].push(value);
+      });
+    });
+
+    const nestedArraySorted = nestedArrayToSort.map((array, index) => {
+      return array.sort((a, b) => a - b);
+    });
+
+    return nestedArraySorted.map(array => {
+      return getMedian(array);
+    });
+  }
+
   // Simulate the expected number of Nk for various values of r and k using the Monte Carlo method
   function simulateExpectedNK(numSimulation, rValues, numEpochs, targetEpoch = null, targetSlot = false) {
     const results = [];
     const n = 32;
 
     // n + 1 cause we also store 0 nK-blocktuples
-    const nKBlocktuples = Array.from({ length: n + 1 }, () => 0);
+    const nKBlocktuples = Array.from({ length: n + 1 }, () =>
+      Array.from({ length: numSimulation }, () => 0),
+    );
+
+    const targetSlotBlocktuple = Array.from({ length: numSimulation }, () => 0);
 
     const nkValues = Array.from({ length: numSimulation }, () =>
       Array.from({ length: numEpochs }, () => Array.from({ length: n }, () => 0)),
@@ -264,11 +302,11 @@
             }
           }
 
-          countConsecutiveKBlocktuples(nkValues[i][j], j);
+          countConsecutiveKBlocktuples(nkValues[i][j], i, j);
         }
       }
 
-      function countConsecutiveKBlocktuples(epoch, epochNumber) {
+      function countConsecutiveKBlocktuples(epoch, numSimulation, epochNumber) {
         let consecutiveCount = 0;
 
         for (let index = 0; index < epoch.length; index++) {
@@ -282,7 +320,7 @@
           if (slot === 1) {
             consecutiveCount++;
           } else if (consecutiveCount !== 0) { // We don't track 0 k blocktuples
-            nKBlocktuples[consecutiveCount] += 1;
+            nKBlocktuples[consecutiveCount][numSimulation] += 1;
 
             // Reset the count
             consecutiveCount = 0;
@@ -295,7 +333,7 @@
               targetEpochSlots[index] += 1;
 
               if (targetSlot && index === targetSlot - 1) {
-                targetSlotConsecutiveCount++;
+                targetSlotBlocktuple[numSimulation] += 1;
 
                 // We exit the loop when we reach the target slot for the target epoch
                 break;
@@ -305,17 +343,16 @@
         }
       }
 
-      const averageNKBlocktuples = nKBlocktuples.map((sum) => Math.floor(sum / numSimulation));
-      const oddsNKBlocktuples = averageNKBlocktuples.map((sum) => sum / (numEpochs * n));
+      const medianNKBlocktuples = getDoubleArrayMedian(nKBlocktuples);
+      const oddsNKBlocktuples = medianNKBlocktuples.map((sum) => sum / (numEpochs * n));
 
-      const averageSlotBlocktuples = targetEpochSlots.map((sum) => Math.floor(sum / numSimulation));
-      const averageTargetSlotBlocktuple = Math.floor(targetSlotConsecutiveCount / numSimulation);
+      const medianTargetSlotBlocktuple = getMedian(targetSlotBlocktuple);
 
       // Store the results for the current r value
       if (targetSlot) {
-        results.push({ r, averageNKBlocktuples, oddsNKBlocktuples, averageTargetSlotBlocktuple });
+        results.push({ r, medianNKBlocktuples, oddsNKBlocktuples, medianTargetSlotBlocktuple });
       } else {
-        results.push({ r, averageNKBlocktuples, oddsNKBlocktuples });
+        results.push({ r, medianNKBlocktuples, oddsNKBlocktuples });
       }
     }
 
@@ -356,8 +393,8 @@
     const spreadsheetId = process.env["SPREADSHEET_ID"];
 
     const validatorPools = transposeArray(await getValidatorPools());
-
     const lidoRStake = [validatorPools[validatorPools.length - 1]][0][1];
+
     const lidoPMF = calculatePMF(32, lidoRStake);
     const lidoSimulation = simulateValidatorSelection([lidoRStake], 1000000)[0].avgProbability;
 
@@ -366,7 +403,7 @@
 
     const expectedDailyNKBlocktuples = simulateExpectedNK(50000, [lidoRStake], 225);
     const lidoExpectedDailyNKBlocktuples = transposeArray([
-      expectedDailyNKBlocktuples[0].averageNKBlocktuples,
+      expectedDailyNKBlocktuples[0].medianNKBlocktuples,
     ]);
 
     const lidoExpectedDailyOddsNKBlocktuples = transposeArray([
@@ -375,7 +412,11 @@
 
     const expectedTargetEpochNKBlocktuples = simulateExpectedNK(50000, [lidoRStake], 225, 225, true);
     const lidoExpectedTargetEpochNKBlocktuples = transposeArray([
-      expectedTargetEpochNKBlocktuples[0].averageNKBlocktuples,
+      expectedTargetEpochNKBlocktuples[0].medianNKBlocktuples,
+    ]);
+
+    const lidoExpectedTargetEpochOddsNKBlocktuples = transposeArray([
+      expectedTargetEpochNKBlocktuples[0].oddsNKBlocktuples,
     ]);
 
     const lidoExpectedAvgTargetSlotBlocktuple =
@@ -429,6 +470,15 @@
     sheet.update({
       spreadsheetId,
       range: "G53",
+      valueInputOption: "USER_ENTERED",
+      resource: {
+        values: lidoExpectedTargetEpochOddsNKBlocktuples,
+      },
+    });
+
+    sheet.update({
+      spreadsheetId,
+      range: "H53",
       valueInputOption: "USER_ENTERED",
       resource: {
         values: lidoExpectedAvgTargetSlotBlocktuple,
